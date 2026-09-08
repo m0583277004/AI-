@@ -1,0 +1,6 @@
+{
+  "name": "AI טלפוני קולי לימות המשיח",
+  "description": "מערכת AI טלפונית חכמה וחסכונית לטלפונים כשרים וללא אינטרנט דרך ימות המשיח (שלוחה 4) מבוססת Gemini עם תמיכה בהקלטה קולית ומענה קולי מהיר.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
