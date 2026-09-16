@@ -2,6 +2,8 @@ import { CallLog, AssistantSettings } from '../src/types';
 import { synthesizeHebrewSpeech } from './ttsService';
 import { processAudioQuery, processTextQuery, ConversationMessage } from './geminiService';
 import { sendEmailMessage } from './emailService';
+import { getProfileForExtension, EXTENSION_PROFILES, ExtensionProfile } from './extensionProfiles';
+import { calculateSpitzerLoan, LoanInput } from './loanCalculator';
 import crypto from 'crypto';
 
 interface AudioCacheItem {
@@ -22,6 +24,12 @@ interface CallerSession {
   step: 'WELCOME' | 'RECORDING' | 'PLAYING';
   stepCounter: number;
   lastActive: number;
+  loanState?: {
+    step: 'ASK_AMOUNT' | 'ASK_INTEREST' | 'ASK_YEARS';
+    amount?: number;
+    interest?: number;
+    years?: number;
+  };
 }
 
 const sessions = new Map<string, CallerSession>();
@@ -202,7 +210,20 @@ export async function handleYemotRequest(
   const callId = String(queryParams.ApiCallId || queryParams.CallId || '');
   const extension = String(queryParams.ApiExtension || '6');
   const hangup = queryParams.hangup === 'yes';
-  const isZeroCostAudioMode = extension === '6';
+  const profile = getProfileForExtension(extension);
+  const isZeroCostAudioMode = ['6', '7', '8', '9', '10'].includes(extension);
+
+  // Helper for generating clean Yemot recording command with zero background beeps and # to finish
+  // Parameters according to official Yemot IVR record specification:
+  // 1: valName, 2: re_enter ('no'), 3: 'record', 4: path (''), 5: file_name (''),
+  // 6: no_confirm_menu ('no' = no confirmation menu, instant finish on # or silence),
+  // 7: save_on_hangup ('yes' = save even if caller hangs up), 8: append (''),
+  // 9: min_length ('' = completely removes minimum length requirement, fixes 'ההודעה קצרה מדי'),
+  // 10: max_length (60 or 90 seconds)
+  const getRecordCmd = (fileToPlay: string, varName: string) => {
+    const maxSec = extension === '10' ? 90 : 60;
+    return `read=${fileToPlay}=${varName},no,record,,,no,yes,,,${maxSec}`;
+  };
 
   // Primary key for the call session: prefer ApiCallId when present (unique per phone call), else phone
   const sessionKey = (callId && callId !== 'unknown' && callId !== 'undefined')
@@ -262,21 +283,128 @@ export async function handleYemotRequest(
     ? currentValParam
     : (queryParams.record_file || queryParams.FileUrl || queryParams.RecordUrl || queryParams.file_name || queryParams.val_1);
 
+  // ==========================================
+  // EXTENSION 12: SPITZER LOAN CALCULATOR IVR FLOW
+  // ==========================================
+  if (extension === '12') {
+    if (!session.loanState) {
+      session.loanState = { step: 'ASK_AMOUNT' };
+    }
+
+    // Step 0: User just entered extension 12 -> ask for Loan Amount
+    if (!rawInput && !uploadedAudioBuffer && !queryParams.prompt && !queryParams.text) {
+      session.stepCounter = 1;
+      session.loanState = { step: 'ASK_AMOUNT' };
+      const promptText = formatYemotText('שלום וברוכים הבאים למחשבון שפיצר. אנא הקישו את סכום ההלוואה המבוקש בשקלים ולאחריו סולמית.');
+      // read=t-text=val_1,no,Digits,,1,8,7,Sec,#,No,No
+      const yemotCmd = `read=t-${promptText}=val_1,no,Digits,,1,9,8,Sec,#,No,No`;
+      return { yemotResponse: yemotCmd, contentType: 'text/plain; charset=utf-8' };
+    }
+
+    // Support * as decimal point (e.g. 4*5 becomes 4.5)
+    const rawClean = String(rawInput || '').replace(/[^0-9.*]/g, '');
+    const digitInput = rawClean.replace(/\*/g, '.');
+    const currentStep = session.loanState.step;
+
+    if (currentStep === 'ASK_AMOUNT') {
+      const amount = parseFloat(digitInput);
+      if (!amount || isNaN(amount) || amount <= 0) {
+        const errText = formatYemotText('הסכום שהוקש אינו תקין. אנא הקישו שוב את סכום ההלוואה בשקלים ולאחריו סולמית.');
+        const yemotCmd = `read=t-${errText}=val_${session.stepCounter + 1},no,Digits,,1,9,8,Sec,#,No,No`;
+        session.stepCounter += 1;
+        return { yemotResponse: yemotCmd, contentType: 'text/plain; charset=utf-8' };
+      }
+
+      session.loanState.amount = amount;
+      session.loanState.step = 'ASK_INTEREST';
+      session.stepCounter += 1;
+      const askInterestText = formatYemotText(`הסכום נקלט: ${amount.toLocaleString('he-IL')} שקלים. כעת, אנא הקישו את הריבית השנתית באחוזים, ולסיום סולמית. לריבית עם נקודה עשרונית הקישו כוכבית, למשל עבור ארבע וחצי אחוז הקישו 4 כוכבית 5 סולמית. לגמ"ח ללא ריבית הקישו 0 סולמית.`);
+      const yemotCmd = `read=t-${askInterestText}=val_${session.stepCounter},no,Digits,,1,6,7,Sec,#,No,No`;
+      return { yemotResponse: yemotCmd, contentType: 'text/plain; charset=utf-8' };
+    }
+
+    if (currentStep === 'ASK_INTEREST') {
+      const interest = parseFloat(digitInput);
+      if (isNaN(interest) || interest < 0 || interest > 100) {
+        const errText = formatYemotText('אחוז הריבית שהוקש אינו תקין. אנא הקישו שוב את הריבית השנתית באחוזים ולאחריה סולמית. לנקודה הקישו כוכבית.');
+        const yemotCmd = `read=t-${errText}=val_${session.stepCounter + 1},no,Digits,,1,6,7,Sec,#,No,No`;
+        session.stepCounter += 1;
+        return { yemotResponse: yemotCmd, contentType: 'text/plain; charset=utf-8' };
+      }
+
+      session.loanState.interest = interest;
+      session.loanState.step = 'ASK_YEARS';
+      session.stepCounter += 1;
+      const askYearsText = formatYemotText(`ריבית של ${interest} אחוזים נקלטה. כעת, אנא הקישו את תקופת ההלוואה בשנים, ולסיום סולמית. למשל לעשר שנים הקישו 10 סולמית.`);
+      const yemotCmd = `read=t-${askYearsText}=val_${session.stepCounter},no,Digits,,1,4,7,Sec,#,No,No`;
+      return { yemotResponse: yemotCmd, contentType: 'text/plain; charset=utf-8' };
+    }
+
+    if (currentStep === 'ASK_YEARS') {
+      const years = parseFloat(digitInput);
+      if (!years || isNaN(years) || years <= 0 || years > 50) {
+        const errText = formatYemotText('מספר השנים שהוקש אינו תקין. אנא הקישו את תקופת ההלוואה בשנים בין שנה לחמישים שנה, ולאחריה סולמית.');
+        const yemotCmd = `read=t-${errText}=val_${session.stepCounter + 1},no,Digits,,1,4,7,Sec,#,No,No`;
+        session.stepCounter += 1;
+        return { yemotResponse: yemotCmd, contentType: 'text/plain; charset=utf-8' };
+      }
+
+      session.loanState.years = years;
+
+      // Calculate Spitzer Loan!
+      const calcResult = calculateSpitzerLoan({
+        principal: session.loanState.amount || 100000,
+        annualInterest: session.loanState.interest || 0,
+        years: years,
+      });
+
+      // Log call
+      const logItem: CallLog = {
+        id: crypto.randomBytes(8).toString('hex'),
+        callerPhone: phone,
+        callerDid: queryParams.ApiDID,
+        callId,
+        extension: '12',
+        timestamp: Date.now(),
+        durationSeconds: Math.round((Date.now() - startTime) / 1000) + 12,
+        questionText: `חישוב הלוואה: ${session.loanState.amount?.toLocaleString('he-IL')} ש"ח, ${session.loanState.interest}% ריבית, ${years} שנים`,
+        questionAudioUrl: rawInput,
+        responseText: calcResult.spokenSummary,
+        status: 'completed',
+        latencyMs: Date.now() - startTime,
+        tokensUsed: 0,
+        costEstimateUsd: 0,
+        costSavedUsd: 0.16,
+      };
+      callLogs.push(logItem);
+
+      // Clean session for new calculation if user wants to calculate another
+      session.loanState = { step: 'ASK_AMOUNT' };
+      session.stepCounter += 1;
+
+      const formattedResultText = formatYemotText(calcResult.spokenSummary);
+      const followUp = formatYemotText('לחישוב הלוואה נוספת הקישו את הסכום בשקלים ולאחריו סולמית, או נתקו.');
+      const yemotCmd = `id_list_message=t-${formattedResultText}&read=t-${followUp}=val_${session.stepCounter},no,Digits,,1,9,8,Sec,#,No,No`;
+      return { yemotResponse: yemotCmd, contentType: 'text/plain; charset=utf-8' };
+    }
+  }
+
   // Case 1: The user just entered the extension -> Play welcome message and prompt for question
   if (!rawInput && !uploadedAudioBuffer && !queryParams.prompt && !queryParams.text) {
     session.step = 'RECORDING';
     session.stepCounter = 1;
 
     if (isZeroCostAudioMode) {
-      // Extension 6: Play pre-uploaded welcome WAV (f-000) and record user voice without STT fees!
-      const yemotReadCommand = 'read=f-000=val_1,no,record,,,no,yes,,1,30';
+      // Extensions 6, 7, 8, 9, 10: Play pre-uploaded welcome WAV (f-000) and record user voice without STT fees!
+      // Plays start beep, silence during recording (zero annoying beeps), finishes on # or silence
+      const yemotReadCommand = getRecordCmd('f-000', 'val_1');
       return {
         yemotResponse: yemotReadCommand,
         contentType: 'text/plain; charset=utf-8',
       };
     } else {
       // Other extensions: Text-to-speech greeting
-      const welcomeText = formatYemotText(currentSettings.welcomeMessage);
+      const welcomeText = formatYemotText(profile.welcomeMessage);
       const yemotReadCommand = `read=t-${welcomeText}=val_1,yes,voice,he-IL,no,,,15,yes`;
       return {
         yemotResponse: yemotReadCommand,
@@ -291,13 +419,21 @@ export async function handleYemotRequest(
 
   if (!audioToProcess && rawInput) {
     const rawStr = String(rawInput).trim();
-    // If it is a file path or URL
-    if (rawStr.startsWith('http') || rawStr.includes('.wav') || rawStr.startsWith('ivr2:') || isZeroCostAudioMode) {
+    // Check if input is likely an audio file reference (url, wav, record prefix, ivr path, or numeric recording index)
+    const isAudioFileRef = rawStr.startsWith('http') ||
+      rawStr.includes('.wav') ||
+      rawStr.startsWith('ivr2:') ||
+      rawStr.startsWith('/') ||
+      rawStr.toLowerCase().startsWith('record') ||
+      /^[a-zA-Z0-9_-]+\.wav$/i.test(rawStr) ||
+      (isZeroCostAudioMode && /^\d{1,5}$/.test(rawStr));
+
+    if (isAudioFileRef) {
       audioToProcess = await fetchYemotAudio(rawStr, extension);
-      if (!audioToProcess && !isZeroCostAudioMode) {
-        questionTranscript = rawStr;
-      }
+    } else if (isZeroCostAudioMode && (rawStr.startsWith('http') || rawStr.includes('.wav') || rawStr.includes('/'))) {
+      audioToProcess = await fetchYemotAudio(rawStr, extension);
     } else {
+      // Direct text question (Hebrew, prompt, or simulator)
       questionTranscript = rawStr;
     }
   }
@@ -312,6 +448,14 @@ export async function handleYemotRequest(
 
   let emailActionResult: { targetEmail?: string; status?: string; previewUrl?: string | false } | undefined = undefined;
 
+  const queryOptions = {
+    systemPrompt: profile.systemPrompt,
+    models: profile.models,
+    temperature: profile.temperature,
+    maxTokens: profile.maxTokens,
+    timeoutMs: profile.timeoutMs,
+  };
+
   if (audioToProcess && audioToProcess.length > 0) {
     hadAudioQuery = true;
     // Process audio directly with Gemini (multimodal hearing - 0 STT fee!)
@@ -319,7 +463,7 @@ export async function handleYemotRequest(
       audioToProcess,
       'audio/wav',
       session.history,
-      currentSettings.systemPrompt
+      queryOptions
     );
     aiResponseText = geminiResult.textResponse;
     questionTranscript = geminiResult.transcript || 'שאלה קולית מוקלטת';
@@ -333,7 +477,7 @@ export async function handleYemotRequest(
       };
       sendEmailMessage({
         to: emailTarget,
-        subject: geminiResult.emailAction.subject || 'מידע משיחה קולית - ימות המשיח AI',
+        subject: geminiResult.emailAction.subject || `מידע משיחה קולית (${profile.name}) - ימות המשיח AI`,
         text: geminiResult.emailAction.emailContent || aiResponseText,
         callerPhone: phone,
       })
@@ -352,12 +496,12 @@ export async function handleYemotRequest(
     const geminiResult = await processTextQuery(
       questionTranscript,
       session.history,
-      currentSettings.systemPrompt
+      queryOptions
     );
     aiResponseText = geminiResult.textResponse;
   } else {
     // No speech captured or silence
-    aiResponseText = currentSettings.noSpeechMessage;
+    aiResponseText = profile.noSpeechMessage;
     questionTranscript = '(לא נקלטה שאלה)';
   }
 
@@ -380,7 +524,7 @@ export async function handleYemotRequest(
   }
 
   const latency = Date.now() - startTime;
-  const costSaved = isZeroCostAudioMode ? 0.16 : 0.08; // 100% saved on both STT and TTS on ext 6
+  const costSaved = isZeroCostAudioMode ? 0.16 : 0.08; // 100% saved on both STT and TTS on ext 6, 7, 8
   const costEstimate = 0.0004;
 
   const logItem: CallLog = {
@@ -413,23 +557,24 @@ export async function handleYemotRequest(
 
   const nextVarName = `val_${session.stepCounter}`;
 
-  // Extension 6: 100% Zero-cost Audio Pipeline (TTS generated on server, uploaded as WAV, played with f-)
+  // Extensions 6, 7, 8: 100% Zero-cost Audio Pipeline (TTS generated on server, uploaded as WAV, played with f-)
   if (isZeroCostAudioMode) {
     if (isValidSpeech && !isErrorResponse) {
       try {
-        const responseAudioBuffer = await synthesizeHebrewSpeech(aiResponseText, currentSettings.voiceSpeed);
-        const safeCallId = callId.replace(/[^a-zA-Z0-9_-]/g, '').slice(-10);
+        const responseAudioBuffer = await synthesizeHebrewSpeech(aiResponseText, profile.voiceSpeed || currentSettings.voiceSpeed);
+        const safeCallId = (callId || phone || String(Date.now())).replace(/[^a-zA-Z0-9_-]/g, '').slice(-10);
         const ansFileName = `ans_${safeCallId}_${session.stepCounter}`;
         
-        // Upload synthesized audio file to Yemot extension 6
-        const uploadOk = await uploadYemotAudio('6', ansFileName, responseAudioBuffer);
+        // Upload synthesized audio file to Yemot extension (6, 7, or 8)
+        const uploadOk = await uploadYemotAudio(extension, ansFileName, responseAudioBuffer);
         
         // Store in audio cache for browser simulator
         await storeAudioInCache(responseAudioBuffer, 'audio/wav');
 
         if (uploadOk) {
           // Yemot command: play uploaded answer file f-ans..., then play followup f-001 and record next question
-          const yemotCommand = `id_list_message=f-${ansFileName}&read=f-001=${nextVarName},no,record,,,no,yes,,1,30`;
+          const recCmd = getRecordCmd('f-001', nextVarName);
+          const yemotCommand = `id_list_message=f-${ansFileName}&${recCmd}`;
           return {
             yemotResponse: yemotCommand,
             contentType: 'text/plain; charset=utf-8',
@@ -437,31 +582,37 @@ export async function handleYemotRequest(
         } else {
           // Fallback: TTS command so the call NEVER hangs up or plays missing file
           const cleanAi = formatYemotText(aiResponseText);
-          const yemotCommand = `id_list_message=t-${cleanAi}&read=f-001=${nextVarName},no,record,,,no,yes,,1,30`;
+          const recCmd = getRecordCmd('f-001', nextVarName);
+          const yemotCommand = `id_list_message=t-${cleanAi}&${recCmd}`;
           return {
             yemotResponse: yemotCommand,
             contentType: 'text/plain; charset=utf-8',
           };
         }
       } catch (audioErr) {
-        console.error('Failed to generate/upload audio for ext 6:', audioErr);
+        console.error(`Failed to generate/upload audio for ext ${extension}:`, audioErr);
         const cleanAi = formatYemotText(aiResponseText);
-        const yemotCommand = `id_list_message=t-${cleanAi}&read=f-001=${nextVarName},no,record,,,no,yes,,1,30`;
+        const recCmd = getRecordCmd('f-001', nextVarName);
+        const yemotCommand = `id_list_message=t-${cleanAi}&${recCmd}`;
         return {
           yemotResponse: yemotCommand,
           contentType: 'text/plain; charset=utf-8',
         };
       }
     } else if (!isValidSpeech) {
-      // No speech recorded -> play pre-uploaded f-002 prompt and record again
-      const yemotCommand = `read=f-002=${nextVarName},no,record,,,no,yes,,1,30`;
+      // No speech recorded -> play gentle prompt and record again
+      const cleanNoSpeech = formatYemotText(profile.noSpeechMessage);
+      const recCmd = getRecordCmd('f-001', nextVarName);
+      const yemotCommand = `id_list_message=t-${cleanNoSpeech}&${recCmd}`;
       return {
         yemotResponse: yemotCommand,
         contentType: 'text/plain; charset=utf-8',
       };
     } else {
-      // Error response -> play pre-uploaded f-003 prompt and record again
-      const yemotCommand = `read=f-003=${nextVarName},no,record,,,no,yes,,1,30`;
+      // Error response -> apologize and record again
+      const cleanErr = formatYemotText('חלה שגיאה זמנית אנא נסו לשאול שוב');
+      const recCmd = getRecordCmd('f-001', nextVarName);
+      const yemotCommand = `id_list_message=t-${cleanErr}&${recCmd}`;
       return {
         yemotResponse: yemotCommand,
         contentType: 'text/plain; charset=utf-8',
@@ -480,7 +631,7 @@ export async function handleYemotRequest(
       contentType: 'text/plain; charset=utf-8',
     };
   } else {
-    const noSpeechPrompt = formatYemotText(aiResponseText);
+    const noSpeechPrompt = formatYemotText(profile.noSpeechMessage);
     const yemotCommand = `read=t-${noSpeechPrompt}=${nextVarName},yes,voice,he-IL,no,,,15,yes`;
     return {
       yemotResponse: yemotCommand,

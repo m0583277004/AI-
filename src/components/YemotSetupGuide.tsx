@@ -14,7 +14,7 @@ export const YemotSetupGuide: React.FC<YemotSetupGuideProps> = ({ webhookUrl }) 
   const [systemNumber, setSystemNumber] = useState('0777003161');
   const [password, setPassword] = useState('7003161');
   const [apiKey, setApiKey] = useState('WU1BUElL.apik_WtVEpFUY1BY9hoo6d0tV3g.p2JSowKvsXxrlQNeXfdTVK63hgdh2gYOdBJ6O9YUGik');
-  const [selectedExt, setSelectedExt] = useState<'6' | '4' | '5'>('6');
+  const [selectedExt, setSelectedExt] = useState<'6' | '7' | '8' | '9' | '10' | '12' | '4'>('6');
   const [remoteSyncing, setRemoteSyncing] = useState(false);
   const [remoteStatus, setRemoteStatus] = useState<{
     loaded: boolean;
@@ -25,7 +25,7 @@ export const YemotSetupGuide: React.FC<YemotSetupGuideProps> = ({ webhookUrl }) 
     loaded: false,
     configured: true,
     mtime: 'הוגדר בהצלחה במערכת',
-    message: 'שלוחה 6 (החינמית ללא STT/TTS) ושלוחה 4 מוגדרות בימות המשיח!',
+    message: 'כל השלוחות (6, 7, 8, 9, 10, 12) מוגדרות ופועלות ללא עלות בימות המשיח!',
   });
 
   const checkRemoteStatus = async () => {
@@ -83,8 +83,8 @@ export const YemotSetupGuide: React.FC<YemotSetupGuideProps> = ({ webhookUrl }) 
 
   // Generate ext.ini content for selected Extension
   const getExtIniContent = () => {
-    const isExt6 = selectedExt === '6';
-    return `; הגדרות שלוחה ${selectedExt} - מענה קולי מבוסס AI של ימות המשיח (${isExt6 ? 'מסלול חינמי ללא עלות יחידות STT/TTS' : 'מסלול תמלול והקראה מהיר'})
+    const isFreeExt = ['6', '7', '8', '9', '10'].includes(selectedExt);
+    return `; הגדרות שלוחה ${selectedExt} - מענה קולי מבוסס AI של ימות המשיח (${isFreeExt ? 'מסלול חינמי ללא עלות יחידות STT/TTS' : 'מסלול תמלול והקראה מהיר'})
 ; סוג השלוחה: API חיצוני
 type=api
 
@@ -96,7 +96,7 @@ api_phone_send=yes
 api_did_send=yes
 api_extension_send=yes
 api_hangup_send=yes
-${isExt6 ? '; שליחת קובץ הקלטה ישירות לשרת AI ללא עלות זיהוי בימות המשיח\napi_link_send_recording=yes\napi_timeout=35' : '; הגדרות תאימות שמע\napi_timeout=25'}
+${isFreeExt ? '; שליחת קובץ הקלטה ישירות לשרת AI ללא עלות זיהוי בימות המשיח\napi_link_send_recording=yes\napi_timeout=60' : '; הגדרות תאימות שמע\napi_timeout=25'}
 `;
   };
 
@@ -168,7 +168,7 @@ ${isExt6 ? '; שליחת קובץ הקלטה ישירות לשרת AI ללא ע�
         </div>
 
         {/* Extension Switcher Tabs */}
-        <div className="flex items-center gap-2 pt-2 border-t border-slate-800">
+        <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-800">
           <span className="text-xs font-semibold text-slate-400">בחר שלוחה להגדרה:</span>
           
           <button
@@ -180,7 +180,67 @@ ${isExt6 ? '; שליחת קובץ הקלטה ישירות לשרת AI ללא ע�
             }`}
           >
             <Sparkles className="w-3.5 h-3.5" />
-            <span>שלוחה 6 (מסלול זול: 0 יחידות STT/TTS)</span>
+            <span>שלוחה 6 (חינם 0 יחידות)</span>
+          </button>
+
+          <button
+            onClick={() => setSelectedExt('7')}
+            className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 ${
+              selectedExt === '7'
+                ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
+                : 'bg-slate-950 text-slate-300 hover:text-white border border-slate-800'
+            }`}
+          >
+            <Sparkles className="w-3.5 h-3.5" />
+            <span>שלוחה 7 (חינם 0 יחידות)</span>
+          </button>
+
+          <button
+            onClick={() => setSelectedExt('8')}
+            className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 ${
+              selectedExt === '8'
+                ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
+                : 'bg-slate-950 text-slate-300 hover:text-white border border-slate-800'
+            }`}
+          >
+            <Sparkles className="w-3.5 h-3.5" />
+            <span>שלוחה 8 (חבר ותומך)</span>
+          </button>
+
+          <button
+            onClick={() => setSelectedExt('9')}
+            className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 ${
+              selectedExt === '9'
+                ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
+                : 'bg-slate-950 text-slate-300 hover:text-white border border-slate-800'
+            }`}
+          >
+            <Zap className="w-3.5 h-3.5 text-amber-400" />
+            <span>שלוחה 9 (טורבו מהיר)</span>
+          </button>
+
+          <button
+            onClick={() => setSelectedExt('10')}
+            className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 ${
+              selectedExt === '10'
+                ? 'bg-indigo-500 text-white shadow-md shadow-indigo-500/20'
+                : 'bg-slate-950 text-slate-300 hover:text-white border border-slate-800'
+            }`}
+          >
+            <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
+            <span>שלוחה 10 (תשובות ארוכות חינם)</span>
+          </button>
+
+          <button
+            onClick={() => setSelectedExt('12')}
+            className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 ${
+              selectedExt === '12'
+                ? 'bg-teal-500 text-slate-950 shadow-md shadow-teal-500/20'
+                : 'bg-slate-950 text-slate-300 hover:text-white border border-slate-800'
+            }`}
+          >
+            <Sparkles className="w-3.5 h-3.5 text-teal-300" />
+            <span>שלוחה 12 (מחשבון שפיצר)</span>
           </button>
 
           <button
@@ -192,18 +252,7 @@ ${isExt6 ? '; שליחת קובץ הקלטה ישירות לשרת AI ללא ע�
             }`}
           >
             <Zap className="w-3.5 h-3.5" />
-            <span>שלוחה 4 (מסלול תמלול מהיר)</span>
-          </button>
-
-          <button
-            onClick={() => setSelectedExt('5')}
-            className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 ${
-              selectedExt === '5'
-                ? 'bg-emerald-500 text-slate-950 shadow-md shadow-emerald-500/20'
-                : 'bg-slate-950 text-slate-300 hover:text-white border border-slate-800'
-            }`}
-          >
-            <span>שלוחה 5</span>
+            <span>שלוחה 4 (תמלול מהיר)</span>
           </button>
         </div>
 

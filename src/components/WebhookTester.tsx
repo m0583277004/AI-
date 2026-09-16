@@ -99,6 +99,25 @@ export const WebhookTester: React.FC<WebhookTesterProps> = ({ webhookUrl }) => {
 
             <div>
               <label className="block text-[11px] text-slate-400 mb-1">מספר שלוחה (ApiExtension):</label>
+              <div className="flex gap-1.5 mb-1.5 flex-wrap">
+                {['6', '9', '10', '12', '7', '8', '4'].map((e) => (
+                  <button
+                    key={e}
+                    type="button"
+                    onClick={() => {
+                      setExtension(e);
+                      if (e === '12') setPrompt('');
+                    }}
+                    className={`px-2 py-0.5 rounded text-[10px] font-bold border transition-colors ${
+                      extension === e
+                        ? 'bg-amber-500 text-slate-950 border-amber-400'
+                        : 'bg-slate-900 text-slate-400 border-slate-700 hover:text-white'
+                    }`}
+                  >
+                    {e === '12' ? '12 (שפיצר)' : `שלוחה ${e}`}
+                  </button>
+                ))}
+              </div>
               <input
                 type="text"
                 value={extension}

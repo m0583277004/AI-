@@ -15,15 +15,28 @@ export interface ConversationMessage {
   text: string;
 }
 
-const MODELS_TO_TRY = ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-3.5-flash', 'gemini-3.7-flash'];
+export interface QueryOptions {
+  systemPrompt?: string;
+  models?: string[];
+  temperature?: number;
+  maxTokens?: number;
+  timeoutMs?: number;
+}
 
-async function generateContentWithFallback(params: any): Promise<any> {
+const DEFAULT_MODELS = ['gemini-flash-lite-latest', 'gemini-3.5-flash-lite', 'gemini-flash-latest', 'gemini-3.1-flash-lite'];
+
+async function generateContentWithFallback(
+  params: any,
+  modelsToTry: string[] = DEFAULT_MODELS,
+  timeoutMs = 8000
+): Promise<any> {
   let lastError = null;
-  for (const model of MODELS_TO_TRY) {
+  const models = modelsToTry.length > 0 ? modelsToTry : DEFAULT_MODELS;
+
+  for (const model of models) {
     try {
-      // Add an 8-second timeout per attempt to ensure telephone calls never hang
       const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error(`Model ${model} timed out after 8s`)), 8000)
+        setTimeout(() => reject(new Error(`Model ${model} timed out after ${timeoutMs}ms`)), timeoutMs)
       );
 
       const generatePromise = ai.models.generateContent({
@@ -70,6 +83,11 @@ export function cleanSpokenResponse(text: string): string {
     .replace(/\s+/g, ' ')
     .trim();
 
+  // If stripping the question resulted in an empty string, preserve the original text without markdown
+  if (!cleaned && text.trim()) {
+    cleaned = text.replace(/[*#_~`>]/g, ' ').trim();
+  }
+
   return cleaned;
 }
 
@@ -91,11 +109,16 @@ export async function processAudioQuery(
   audioBuffer: Buffer,
   mimeType: string,
   history: ConversationMessage[] = [],
-  customSystemPrompt?: string
+  options?: string | QueryOptions
 ): Promise<AudioQueryResult> {
   try {
+    const opts: QueryOptions = typeof options === 'string' ? { systemPrompt: options } : (options || {});
     const base64Audio = audioBuffer.toString('base64');
-    const systemInstruction = customSystemPrompt || DEFAULT_SYSTEM_PROMPT;
+    const systemInstruction = opts.systemPrompt || DEFAULT_SYSTEM_PROMPT;
+    const modelsToTry = opts.models || DEFAULT_MODELS;
+    const timeoutMs = opts.timeoutMs || 8000;
+    const temperature = opts.temperature !== undefined ? opts.temperature : 0.2;
+    const maxOutputTokens = opts.maxTokens || 800;
 
     // Build multi-turn contents including prior conversation history
     const contents: any[] = [];
@@ -144,13 +167,18 @@ export async function processAudioQuery(
       ],
     });
 
-    const response = await generateContentWithFallback({
-      contents,
-      config: {
-        systemInstruction,
-        temperature: 0.2,
+    const response = await generateContentWithFallback(
+      {
+        contents,
+        config: {
+          systemInstruction,
+          temperature,
+          maxOutputTokens,
+        },
       },
-    });
+      modelsToTry,
+      timeoutMs
+    );
 
     const responseText = response.text || '';
     
@@ -192,17 +220,17 @@ export async function processAudioQuery(
 
     if (responseText.includes('[ANSWER]:')) {
       const matchAnswer = responseText.match(/\[ANSWER\]:\s*(.*?)$/s);
-      if (matchAnswer) {
+      if (matchAnswer && matchAnswer[1].trim()) {
         answer = matchAnswer[1].trim();
       }
     } else {
       // Fallback cleanup if tags weren't exact
       answer = responseText
-        .replace(/\[TRANSCRIPT\]:.*?\n/g, '')
-        .replace(/\[EMAIL_TARGET\]:.*?\n/g, '')
-        .replace(/\[EMAIL_SUBJECT\]:.*?\n/g, '')
-        .replace(/\[EMAIL_BODY\]:.*?\n/g, '')
-        .replace(/\[ANSWER\]:/g, '')
+        .replace(/\[TRANSCRIPT\]:[^\n]*(\n|$)/gi, '')
+        .replace(/\[EMAIL_TARGET\]:[^\n]*(\n|$)/gi, '')
+        .replace(/\[EMAIL_SUBJECT\]:[^\n]*(\n|$)/gi, '')
+        .replace(/\[EMAIL_BODY\]:[^\n]*(\n|$)/gi, '')
+        .replace(/\[ANSWER\]:/gi, '')
         .trim();
     }
 
@@ -215,8 +243,12 @@ export async function processAudioQuery(
         }
       : undefined;
 
+    const cleanedAnswer = cleanSpokenResponse(answer);
+    const finalAnswer = cleanedAnswer ||
+      (emailTarget ? 'המידע נשלח בהצלחה לכתובת המייל שציינת.' : 'לא הצלחתי לשמוע את השאלה בבירור, אנא נסו לשאול שוב לאחר הצליל.');
+
     return {
-      textResponse: cleanSpokenResponse(answer) || 'שלום, קיבלתי את שאלתך.',
+      textResponse: finalAnswer,
       transcript: transcript || 'שאלה קולית שהוקלטה בטלפון',
       emailAction,
     };
@@ -236,10 +268,15 @@ export async function processAudioQuery(
 export async function processTextQuery(
   textPrompt: string,
   history: ConversationMessage[] = [],
-  customSystemPrompt?: string
+  options?: string | QueryOptions
 ): Promise<{ textResponse: string }> {
   try {
-    const systemInstruction = customSystemPrompt || DEFAULT_SYSTEM_PROMPT;
+    const opts: QueryOptions = typeof options === 'string' ? { systemPrompt: options } : (options || {});
+    const systemInstruction = opts.systemPrompt || DEFAULT_SYSTEM_PROMPT;
+    const modelsToTry = opts.models || DEFAULT_MODELS;
+    const timeoutMs = opts.timeoutMs || 8000;
+    const temperature = opts.temperature !== undefined ? opts.temperature : 0.5;
+    const maxOutputTokens = opts.maxTokens || 800;
 
     const chatContents = history.map((msg) => ({
       role: msg.role === 'assistant' ? 'model' : 'user',
@@ -251,16 +288,21 @@ export async function processTextQuery(
       parts: [{ text: textPrompt }],
     });
 
-    const response = await generateContentWithFallback({
-      contents: chatContents,
-      config: {
-        systemInstruction,
-        temperature: 0.5,
+    const response = await generateContentWithFallback(
+      {
+        contents: chatContents,
+        config: {
+          systemInstruction,
+          temperature,
+          maxOutputTokens,
+        },
       },
-    });
+      modelsToTry,
+      timeoutMs
+    );
 
     return {
-      textResponse: cleanSpokenResponse(response.text || '') || 'שלום, קיבלתי את פנייתך.',
+      textResponse: cleanSpokenResponse(response.text || '') || 'לא הצלחתי לקלוט את השאלה במדויק, אנא נסו לשאול שוב.',
     };
   } catch (error: any) {
     console.error('Error in Gemini text processing:', error);

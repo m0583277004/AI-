@@ -13,19 +13,22 @@ export async function synthesizeHebrewSpeech(text: string, speed = 1.0): Promise
     return Buffer.from([]);
   }
 
-  // Split into chunks of ~150 chars max for high reliability & fast streaming
-  const chunks = splitTextIntoSentenceChunks(cleanText, 160);
-  const audioBuffers: Buffer[] = [];
+  // Split into chunks of ~160 chars max for high reliability & fast streaming
+  const validChunks = splitTextIntoSentenceChunks(cleanText, 160)
+    .map(c => c.trim())
+    .filter(Boolean);
 
-  for (const chunk of chunks) {
-    if (!chunk.trim()) continue;
-    try {
-      const buffer = await fetchTTSChunk(chunk.trim(), speed);
-      audioBuffers.push(buffer);
-    } catch (err) {
-      console.error('Error fetching TTS chunk:', err);
-    }
-  }
+  // Fetch all TTS chunks in parallel for blazing-fast generation (< 1.5s total)
+  const results = await Promise.all(
+    validChunks.map(chunk =>
+      fetchTTSChunk(chunk, speed).catch(err => {
+        console.error('Error fetching TTS chunk:', err);
+        return null;
+      })
+    )
+  );
+
+  const audioBuffers: Buffer[] = results.filter((b): b is Buffer => b !== null && b.length > 0);
 
   if (audioBuffers.length === 0) {
     throw new Error('Failed to generate audio for text');

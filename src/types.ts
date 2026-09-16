@@ -44,15 +44,18 @@ export interface YemotConfigOptions {
   allowDtmfExit: boolean;
 }
 
-export interface CallSimulationState {
-  status: 'idle' | 'calling' | 'connected' | 'listening' | 'processing' | 'speaking' | 'ended';
-  callerNumber: string;
-  callDuration: number;
-  currentStep: string;
-  transcriptHistory: Array<{
-    role: 'user' | 'assistant' | 'system';
-    text: string;
-    audioUrl?: string;
-    timestamp: number;
-  }>;
+export interface ExtensionProfile {
+  extension: string;
+  name: string;
+  description: string;
+  badge: string;
+  modelType: string;
+  welcomeMessage: string;
+  noSpeechMessage: string;
+  systemPrompt: string;
+  models: string[];
+  temperature: number;
+  maxTokens: number;
+  voiceSpeed: number;
+  timeoutMs: number;
 }
