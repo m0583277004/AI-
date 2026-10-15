@@ -5,6 +5,7 @@ import { tunnelmole } from 'tunnelmole';
 
 let activePublicUrl: string = '';
 let lastSyncedUrl: string = '';
+let isPermanentUrlConfigured = false;
 let tunnelProcess: ChildProcess | null = null;
 let isStarting = false;
 let watchdogStarted = false;
@@ -16,6 +17,8 @@ export function getPublicUrl(): string {
 
 export function setPublicUrl(url: string) {
   activePublicUrl = url.trim().replace(/\/$/, '');
+  isPermanentUrlConfigured = true;
+  lastSyncedUrl = activePublicUrl;
 }
 
 function ensureCloudflaredBinary(): string {
@@ -144,7 +147,7 @@ function startWatchdog(port: number = 3000) {
   // Run health check and auto-sync verification every 15 seconds
   setInterval(async () => {
     try {
-      if (!tunnelProcess && !process.env.RENDER_EXTERNAL_URL && !process.env.PUBLIC_URL) {
+      if (!tunnelProcess && !process.env.RENDER_EXTERNAL_URL && !process.env.PUBLIC_URL && !isPermanentUrlConfigured) {
         console.log('[Tunnel Watchdog] Tunnel process dead, restarting...');
         consecutiveHealthFailures = 0;
         await startCloudflareTunnel(port);
@@ -164,7 +167,7 @@ function startWatchdog(port: number = 3000) {
         }
 
         // 2. Edge Health Check on public URL (ensure Cloudflare didn't stall)
-        if (localPingOk && activePublicUrl.includes('trycloudflare.com')) {
+        if (!isPermanentUrlConfigured && localPingOk && activePublicUrl.includes('trycloudflare.com')) {
           let edgeOk = false;
           try {
             const controller = new AbortController();
