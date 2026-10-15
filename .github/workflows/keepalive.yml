@@ -1,0 +1,31 @@
+name: 24/7 Server Keep-Alive & Wakeup Bot
+
+on:
+  schedule:
+    # Run every 5 minutes (standard cron)
+    - cron: '*/5 * * * *'
+  workflow_dispatch: # Allows manual trigger from GitHub UI
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Ping Server & Extension 6 Keep-Alive Endpoint
+        run: |
+          # Target URL (can be customized in GitHub Secrets or defaults to Render URL)
+          TARGET_URL="${{ secrets.SERVER_URL || 'https://peninsula-broader-goals-lone.trycloudflare.com' }}"
+          echo "Pinging Keep-Alive target: $TARGET_URL"
+          
+          # Health check ping
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -m 30 "$TARGET_URL/api/health" || echo "000")
+          echo "Health check response code: $HTTP_STATUS"
+          
+          # Trigger Keep-Alive Bot
+          curl -s -X POST -H "Content-Type: application/json" -m 30 "$TARGET_URL/api/keep-alive/ping-now" || true
+          
+          if [ "$HTTP_STATUS" -eq "200" ]; then
+            echo "SUCCESS: Server is awake and responding!"
+          else
+            echo "WARNING: Server returned status $HTTP_STATUS (might be waking up or offline)"
+          fi

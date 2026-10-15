@@ -9,6 +9,9 @@ import { storeAudioInCache } from './server/yemotService';
 import { initTunnelAndSyncYemot, getPublicUrl, syncToYemot, setPublicUrl } from './server/tunnelService';
 import { EXTENSION_PROFILES, getProfileForExtension } from './server/extensionProfiles';
 import { calculateSpitzerLoan } from './server/loanCalculator';
+import { initKeepAliveBot, getKeepAliveStatus, updateKeepAliveConfig, pingNow } from './server/keepAliveService';
+import { getWhatsAppLogs, sendWhatsAppMessage } from './server/whatsappService';
+import { sendEmailMessage } from './server/emailService';
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -66,6 +69,21 @@ async function startServer() {
     res.json({ status: 'ok', timestamp: Date.now() });
   });
 
+  // 24/7 Keep-Alive Bot endpoints (prevents Render from sleeping)
+  app.get('/api/keep-alive', (req, res) => {
+    res.json(getKeepAliveStatus());
+  });
+
+  app.post('/api/keep-alive', (req, res) => {
+    const updated = updateKeepAliveConfig(req.body);
+    res.json(updated);
+  });
+
+  app.post('/api/keep-alive/ping-now', async (req, res) => {
+    const result = await pingNow();
+    res.json(result);
+  });
+
   // Settings endpoints
   app.get('/api/settings', (req, res) => {
     res.json(getSettings());
@@ -95,6 +113,21 @@ async function startServer() {
   app.get('/api/logs', (req, res) => {
     const logs = getCallLogs();
     res.json(logs);
+  });
+
+  // WhatsApp Dispatched Messages Log
+  app.get('/api/whatsapp/logs', (req, res) => {
+    res.json(getWhatsAppLogs());
+  });
+
+  app.post('/api/whatsapp/send', async (req, res) => {
+    try {
+      const { to, text, audioUrl, senderInfo, fromNumber } = req.body;
+      const result = await sendWhatsAppMessage({ to, text, audioUrl, senderInfo, fromNumber });
+      res.json(result);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
   });
 
   // System stats & cost savings
@@ -238,7 +271,52 @@ async function startServer() {
         timeoutMs: profile.timeoutMs,
       };
 
-      if (ext === '12') {
+      if (ext === '20') {
+        // Voice message recording & WhatsApp/Email dispatch
+        let messageAudioBuffer = req.file?.buffer;
+        let queryText = '';
+        if (messageAudioBuffer) {
+          const mimeType = req.file?.mimetype || 'audio/webm';
+          const result = await processAudioQuery(messageAudioBuffer, mimeType, [], queryOptions);
+          queryText = result.transcript || result.textResponse || 'הודעה קולית הוקלטה';
+        } else {
+          queryText = req.body.text || 'שלום, זו הודעה קולית לבדיקה במערכת';
+          messageAudioBuffer = await synthesizeHebrewSpeech(queryText, 1.0);
+        }
+
+        transcript = queryText;
+        const channel = req.body.channel || (queryText.includes('@') ? 'email' : 'whatsapp');
+        const target = req.body.target || (channel === 'whatsapp' ? '0583277004' : 'm0583277004@gmail.com');
+        const sender = req.body.sender || '0583277004';
+
+        const audioId = await storeAudioInCache(messageAudioBuffer, 'audio/mp3');
+        const audioUrl = `${baseUrl}/api/yemot/audio/${audioId}.mp3`;
+
+        if (channel === 'whatsapp') {
+          await sendWhatsAppMessage({
+            to: target,
+            text: queryText,
+            audioUrl,
+            senderInfo: `מחייג: ${sender}`,
+          });
+          textResponse = `הודעתכם נקלטה ותומללה בהצלחה ונשלחה בוואטסאפ אל ${target}!`;
+        } else {
+          await sendEmailMessage({
+            to: target,
+            subject: `הודעה קולית חדשה משלוחה 20 - מטלפון ${sender}`,
+            text: `התקבלה הודעה קולית חדשה מטלפון ${sender}:\n\n"${queryText}"\n\nקישור להאזנה:\n${audioUrl}`,
+            callerPhone: sender,
+            attachments: [
+              {
+                filename: `voice-message-${Date.now()}.mp3`,
+                content: messageAudioBuffer,
+                contentType: 'audio/mp3',
+              }
+            ]
+          });
+          textResponse = `הודעתכם נקלטה ותומללה בהצלחה ונשלחה במייל אל ${target}!`;
+        }
+      } else if (ext === '12') {
         // Loan calculator extension
         let queryText = '';
         if (req.file) {
@@ -343,6 +421,8 @@ async function startServer() {
     console.log(`Server running on http://0.0.0.0:${PORT}`);
     // Start background public tunnel and sync to Yemot
     initTunnelAndSyncYemot(PORT).catch(console.error);
+    // Start 24/7 Keep-Alive Bot
+    initKeepAliveBot();
   });
 }
 

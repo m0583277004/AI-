@@ -1,9 +1,9 @@
 import React, { useState } from 'react';
-import { Phone, Radio, Settings, FileCode, BarChart3, ListFilter, Copy, Check, Sparkles } from 'lucide-react';
+import { Phone, Radio, Settings, FileCode, BarChart3, ListFilter, Copy, Check, Sparkles, Bot, Send } from 'lucide-react';
 
 interface NavbarProps {
-  activeTab: 'simulator' | 'yemot-setup' | 'cost-comparison' | 'logs' | 'tester';
-  setActiveTab: (tab: 'simulator' | 'yemot-setup' | 'cost-comparison' | 'logs' | 'tester') => void;
+  activeTab: 'simulator' | 'yemot-setup' | 'cost-comparison' | 'logs' | 'tester' | 'keep-alive' | 'voice-dispatch';
+  setActiveTab: (tab: 'simulator' | 'yemot-setup' | 'cost-comparison' | 'logs' | 'tester' | 'keep-alive' | 'voice-dispatch') => void;
   onOpenSettings: () => void;
   webhookUrl: string;
 }
@@ -111,6 +111,32 @@ export const Navbar: React.FC<NavbarProps> = ({
               <Radio className="w-3.5 h-3.5" />
               בדיקת Webhook
             </button>
+
+            <button
+              id="tab-voice-dispatch"
+              onClick={() => setActiveTab('voice-dispatch')}
+              className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                activeTab === 'voice-dispatch'
+                  ? 'bg-emerald-500 text-slate-950 shadow-md shadow-emerald-500/20'
+                  : 'text-slate-300 hover:text-white hover:bg-slate-800/50'
+              }`}
+            >
+              <Send className="w-3.5 h-3.5" />
+              <span>שלוחה 20 (ווצאפ ומייל)</span>
+            </button>
+
+            <button
+              id="tab-keep-alive"
+              onClick={() => setActiveTab('keep-alive')}
+              className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                activeTab === 'keep-alive'
+                  ? 'bg-emerald-500 text-slate-950 shadow-md shadow-emerald-500/20'
+                  : 'text-slate-300 hover:text-white hover:bg-slate-800/50'
+              }`}
+            >
+              <Bot className="w-3.5 h-3.5" />
+              <span>רובוט זמן פעולה (24/7)</span>
+            </button>
           </nav>
 
           {/* Webhook URL pill & Settings */}
@@ -183,6 +209,22 @@ export const Navbar: React.FC<NavbarProps> = ({
             }`}
           >
             בדיקת Webhook
+          </button>
+          <button
+            onClick={() => setActiveTab('voice-dispatch')}
+            className={`px-3 py-1 rounded-md text-xs font-medium whitespace-nowrap ${
+              activeTab === 'voice-dispatch' ? 'bg-emerald-500 text-slate-950' : 'bg-slate-900 text-slate-300'
+            }`}
+          >
+            שלוחה 20 (ווצאפ/מייל)
+          </button>
+          <button
+            onClick={() => setActiveTab('keep-alive')}
+            className={`px-3 py-1 rounded-md text-xs font-medium whitespace-nowrap ${
+              activeTab === 'keep-alive' ? 'bg-emerald-500 text-slate-950' : 'bg-slate-900 text-slate-300'
+            }`}
+          >
+            רובוט 24/7
           </button>
         </div>
 

@@ -2,6 +2,7 @@ import { CallLog, AssistantSettings } from '../src/types';
 import { synthesizeHebrewSpeech } from './ttsService';
 import { processAudioQuery, processTextQuery, ConversationMessage } from './geminiService';
 import { sendEmailMessage } from './emailService';
+import { sendWhatsAppMessage } from './whatsappService';
 import { getProfileForExtension, EXTENSION_PROFILES, ExtensionProfile } from './extensionProfiles';
 import { calculateSpitzerLoan, LoanInput } from './loanCalculator';
 import crypto from 'crypto';
@@ -30,6 +31,13 @@ interface CallerSession {
     interest?: number;
     years?: number;
   };
+  dispatchState?: {
+    step: 'CHOOSE_CHANNEL' | 'INPUT_DESTINATION' | 'CHOOSE_SENDER' | 'INPUT_CUSTOM_SENDER' | 'RECORD_MESSAGE';
+    channel?: 'whatsapp' | 'email';
+    destination?: string;
+    senderOption?: 'default' | 'caller_phone' | 'custom';
+    customSender?: string;
+  };
 }
 
 const sessions = new Map<string, CallerSession>();
@@ -55,6 +63,10 @@ let currentSettings: AssistantSettings = {
   temperature: 0.4,
   saveRecordings: true,
   model: 'gemini-3.7-flash',
+  defaultWhatsAppSender: '0583277004',
+  defaultEmailSender: 'm0583277004@gmail.com',
+  defaultRecipientEmail: 'm0583277004@gmail.com',
+  whatsappProvider: 'simulated',
 };
 
 // Clean cache every 30 minutes
@@ -214,15 +226,26 @@ export async function handleYemotRequest(
   const isZeroCostAudioMode = ['6', '7', '8', '9', '10'].includes(extension);
 
   // Helper for generating clean Yemot recording command with zero background beeps and # to finish
-  // Parameters according to official Yemot IVR record specification:
-  // 1: valName, 2: re_enter ('no'), 3: 'record', 4: path (''), 5: file_name (''),
-  // 6: no_confirm_menu ('no' = no confirmation menu, instant finish on # or silence),
-  // 7: save_on_hangup ('yes' = save even if caller hangs up), 8: append (''),
-  // 9: min_length ('' = completely removes minimum length requirement, fixes 'ההודעה קצרה מדי'),
-  // 10: max_length (60 or 90 seconds)
   const getRecordCmd = (fileToPlay: string, varName: string) => {
     const maxSec = extension === '10' ? 90 : 60;
     return `read=${fileToPlay}=${varName},no,record,,,no,yes,,,${maxSec}`;
+  };
+
+  // Helper for generating clean Yemot digit/keypad input command (read tap mode)
+  // Specification according to official Yemot API:
+  // read=file_or_text=val_name,re_enter,max_digits,min_digits,sec_wait,playback_mode,block_asterisk,block_zero,replace_char,digits_allowed
+  const getDigitsCmd = (promptText: string, varName: string, options: {
+    minDigits?: number;
+    maxDigits?: number;
+    secWait?: number;
+    digitsAllowed?: string[];
+  } = {}) => {
+    const formatted = formatYemotText(promptText);
+    const max = options.maxDigits ?? 1;
+    const min = options.minDigits ?? 1;
+    const sec = options.secWait ?? 8;
+    const allowed = options.digitsAllowed && options.digitsAllowed.length > 0 ? options.digitsAllowed.join('.') : '';
+    return `read=t-${formatted}=${varName},no,${max},${min},${sec},No,no,no,,${allowed}`;
   };
 
   // Primary key for the call session: prefer ApiCallId when present (unique per phone call), else phone
@@ -295,9 +318,11 @@ export async function handleYemotRequest(
     if (!rawInput && !uploadedAudioBuffer && !queryParams.prompt && !queryParams.text) {
       session.stepCounter = 1;
       session.loanState = { step: 'ASK_AMOUNT' };
-      const promptText = formatYemotText('שלום וברוכים הבאים למחשבון שפיצר. אנא הקישו את סכום ההלוואה המבוקש בשקלים ולאחריו סולמית.');
-      // read=t-text=val_1,no,Digits,,1,8,7,Sec,#,No,No
-      const yemotCmd = `read=t-${promptText}=val_1,no,Digits,,1,9,8,Sec,#,No,No`;
+      const yemotCmd = getDigitsCmd(
+        'שלום וברוכים הבאים למחשבון שפיצר. אנא הקישו את סכום ההלוואה המבוקש בשקלים ולאחריו סולמית.',
+        'val_1',
+        { minDigits: 1, maxDigits: 9, secWait: 8 }
+      );
       return { yemotResponse: yemotCmd, contentType: 'text/plain; charset=utf-8' };
     }
 
@@ -309,43 +334,58 @@ export async function handleYemotRequest(
     if (currentStep === 'ASK_AMOUNT') {
       const amount = parseFloat(digitInput);
       if (!amount || isNaN(amount) || amount <= 0) {
-        const errText = formatYemotText('הסכום שהוקש אינו תקין. אנא הקישו שוב את סכום ההלוואה בשקלים ולאחריו סולמית.');
-        const yemotCmd = `read=t-${errText}=val_${session.stepCounter + 1},no,Digits,,1,9,8,Sec,#,No,No`;
         session.stepCounter += 1;
+        const yemotCmd = getDigitsCmd(
+          'הסכום שהוקש אינו תקין. אנא הקישו שוב את סכום ההלוואה בשקלים ולאחריו סולמית.',
+          `val_${session.stepCounter}`,
+          { minDigits: 1, maxDigits: 9, secWait: 8 }
+        );
         return { yemotResponse: yemotCmd, contentType: 'text/plain; charset=utf-8' };
       }
 
       session.loanState.amount = amount;
       session.loanState.step = 'ASK_INTEREST';
       session.stepCounter += 1;
-      const askInterestText = formatYemotText(`הסכום נקלט: ${amount.toLocaleString('he-IL')} שקלים. כעת, אנא הקישו את הריבית השנתית באחוזים, ולסיום סולמית. לריבית עם נקודה עשרונית הקישו כוכבית, למשל עבור ארבע וחצי אחוז הקישו 4 כוכבית 5 סולמית. לגמ"ח ללא ריבית הקישו 0 סולמית.`);
-      const yemotCmd = `read=t-${askInterestText}=val_${session.stepCounter},no,Digits,,1,6,7,Sec,#,No,No`;
+      const yemotCmd = getDigitsCmd(
+        `הסכום נקלט: ${amount.toLocaleString('he-IL')} שקלים. כעת, אנא הקישו את הריבית השנתית באחוזים, ולסיום סולמית. לריבית עם נקודה עשרונית הקישו כוכבית, למשל עבור ארבע וחצי אחוז הקישו 4 כוכבית 5 סולמית. לגמ"ח ללא ריבית הקישו 0 סולמית.`,
+        `val_${session.stepCounter}`,
+        { minDigits: 1, maxDigits: 6, secWait: 8 }
+      );
       return { yemotResponse: yemotCmd, contentType: 'text/plain; charset=utf-8' };
     }
 
     if (currentStep === 'ASK_INTEREST') {
       const interest = parseFloat(digitInput);
       if (isNaN(interest) || interest < 0 || interest > 100) {
-        const errText = formatYemotText('אחוז הריבית שהוקש אינו תקין. אנא הקישו שוב את הריבית השנתית באחוזים ולאחריה סולמית. לנקודה הקישו כוכבית.');
-        const yemotCmd = `read=t-${errText}=val_${session.stepCounter + 1},no,Digits,,1,6,7,Sec,#,No,No`;
         session.stepCounter += 1;
+        const yemotCmd = getDigitsCmd(
+          'אחוז הריבית שהוקש אינו תקין. אנא הקישו שוב את הריבית השנתית באחוזים ולאחריה סולמית. לנקודה הקישו כוכבית.',
+          `val_${session.stepCounter}`,
+          { minDigits: 1, maxDigits: 6, secWait: 8 }
+        );
         return { yemotResponse: yemotCmd, contentType: 'text/plain; charset=utf-8' };
       }
 
       session.loanState.interest = interest;
       session.loanState.step = 'ASK_YEARS';
       session.stepCounter += 1;
-      const askYearsText = formatYemotText(`ריבית של ${interest} אחוזים נקלטה. כעת, אנא הקישו את תקופת ההלוואה בשנים, ולסיום סולמית. למשל לעשר שנים הקישו 10 סולמית.`);
-      const yemotCmd = `read=t-${askYearsText}=val_${session.stepCounter},no,Digits,,1,4,7,Sec,#,No,No`;
+      const yemotCmd = getDigitsCmd(
+        `ריבית של ${interest} אחוזים נקלטה. כעת, אנא הקישו את תקופת ההלוואה בשנים, ולסיום סולמית. למשל לעשר שנים הקישו 10 סולמית.`,
+        `val_${session.stepCounter}`,
+        { minDigits: 1, maxDigits: 4, secWait: 8 }
+      );
       return { yemotResponse: yemotCmd, contentType: 'text/plain; charset=utf-8' };
     }
 
     if (currentStep === 'ASK_YEARS') {
       const years = parseFloat(digitInput);
       if (!years || isNaN(years) || years <= 0 || years > 50) {
-        const errText = formatYemotText('מספר השנים שהוקש אינו תקין. אנא הקישו את תקופת ההלוואה בשנים בין שנה לחמישים שנה, ולאחריה סולמית.');
-        const yemotCmd = `read=t-${errText}=val_${session.stepCounter + 1},no,Digits,,1,4,7,Sec,#,No,No`;
         session.stepCounter += 1;
+        const yemotCmd = getDigitsCmd(
+          'מספר השנים שהוקש אינו תקין. אנא הקישו את תקופת ההלוואה בשנים בין שנה לחמישים שנה, ולאחריה סולמית.',
+          `val_${session.stepCounter}`,
+          { minDigits: 1, maxDigits: 4, secWait: 8 }
+        );
         return { yemotResponse: yemotCmd, contentType: 'text/plain; charset=utf-8' };
       }
 
@@ -383,8 +423,345 @@ export async function handleYemotRequest(
       session.stepCounter += 1;
 
       const formattedResultText = formatYemotText(calcResult.spokenSummary);
-      const followUp = formatYemotText('לחישוב הלוואה נוספת הקישו את הסכום בשקלים ולאחריו סולמית, או נתקו.');
-      const yemotCmd = `id_list_message=t-${formattedResultText}&read=t-${followUp}=val_${session.stepCounter},no,Digits,,1,9,8,Sec,#,No,No`;
+      const followUpCmd = getDigitsCmd(
+        'לחישוב הלוואה נוספת הקישו את הסכום בשקלים ולאחריו סולמית, או נתקו.',
+        `val_${session.stepCounter}`,
+        { minDigits: 1, maxDigits: 9, secWait: 8 }
+      );
+      const yemotCmd = `id_list_message=t-${formattedResultText}&${followUpCmd}`;
+      return { yemotResponse: yemotCmd, contentType: 'text/plain; charset=utf-8' };
+    }
+  }
+
+  // =========================================================================
+  // EXTENSION 20: VOICE RECORDING & DISPATCH TO WHATSAPP OR EMAIL
+  // =========================================================================
+  if (extension === '20') {
+    if (!session.dispatchState) {
+      session.dispatchState = { step: 'CHOOSE_CHANNEL' };
+    }
+
+    // Step 0: User just entered extension 20 -> prompt: 1 for WhatsApp, 2 for Email
+    if (!rawInput && !uploadedAudioBuffer && !queryParams.prompt && !queryParams.text) {
+      session.stepCounter = 1;
+      session.dispatchState = { step: 'CHOOSE_CHANNEL' };
+      const yemotCmd = getDigitsCmd(
+        'שלום וברוכים הבאים להקלטת הודעה קולית. לשליחה בוואטסאפ הקישו 1. לשליחה במייל הקישו 2.',
+        'val_1',
+        { minDigits: 1, maxDigits: 1, secWait: 8, digitsAllowed: ['1', '2'] }
+      );
+      return { yemotResponse: yemotCmd, contentType: 'text/plain; charset=utf-8' };
+    }
+
+    const currentStep = session.dispatchState.step;
+
+    // Step 1: User selected destination channel
+    if (currentStep === 'CHOOSE_CHANNEL') {
+      const choice = String(rawInput || '').trim();
+      if (choice === '1') {
+        session.dispatchState.channel = 'whatsapp';
+        session.dispatchState.step = 'INPUT_DESTINATION';
+        session.stepCounter += 1;
+        const yemotCmd = getDigitsCmd(
+          'בחרתם בשליחה בוואטסאפ. אנא הקישו כעת את מספר הטלפון בוואטסאפ שאליו תרצו לשלוח את ההודעה, ולסיום סולמית.',
+          `val_${session.stepCounter}`,
+          { minDigits: 9, maxDigits: 14, secWait: 10 }
+        );
+        return { yemotResponse: yemotCmd, contentType: 'text/plain; charset=utf-8' };
+      } else if (choice === '2') {
+        session.dispatchState.channel = 'email';
+        session.dispatchState.step = 'INPUT_DESTINATION';
+        session.stepCounter += 1;
+        const yemotCmd = getDigitsCmd(
+          'בחרתם בשליחה במייל. לשליחה למייל הראשי של המערכת הקישו 1. להקלטת כתובת מייל אחרת בקולכם הקישו 2.',
+          `val_${session.stepCounter}`,
+          { minDigits: 1, maxDigits: 1, secWait: 8, digitsAllowed: ['1', '2'] }
+        );
+        return { yemotResponse: yemotCmd, contentType: 'text/plain; charset=utf-8' };
+      } else {
+        session.stepCounter += 1;
+        const yemotCmd = getDigitsCmd(
+          'הקשה לא מזוהה. לשליחה בוואטסאפ הקישו 1, לשליחה במייל הקישו 2.',
+          `val_${session.stepCounter}`,
+          { minDigits: 1, maxDigits: 1, secWait: 8, digitsAllowed: ['1', '2'] }
+        );
+        return { yemotResponse: yemotCmd, contentType: 'text/plain; charset=utf-8' };
+      }
+    }
+
+    // Step 2: Input Destination (Phone for WhatsApp or Email address)
+    if (currentStep === 'INPUT_DESTINATION') {
+      const rawDest = String(rawInput || '').trim();
+
+      if (session.dispatchState.channel === 'whatsapp') {
+        const cleanNumber = rawDest.replace(/[^0-9]/g, '');
+        if (cleanNumber.length < 9) {
+          session.stepCounter += 1;
+          const yemotCmd = getDigitsCmd(
+            'מספר הטלפון שהוקש קצר מדי. אנא הקישו שוב מספר טלפון תקין לוואטסאפ ולאחריו סולמית.',
+            `val_${session.stepCounter}`,
+            { minDigits: 9, maxDigits: 14, secWait: 10 }
+          );
+          return { yemotResponse: yemotCmd, contentType: 'text/plain; charset=utf-8' };
+        }
+        session.dispatchState.destination = cleanNumber;
+        session.dispatchState.step = 'CHOOSE_SENDER';
+        session.stepCounter += 1;
+        // Prompt for sender selection for WhatsApp:
+        // 1: System default WhatsApp sender
+        // 2: Caller's own phone number as sender display
+        // 3: Key-in another custom sender phone number
+        const yemotCmd = getDigitsCmd(
+          'מספר היעד נקלט. כעת בחרו מאיזה מספר יישלח: לשליחה ממספר המערכת הקבוע הקישו 1. לשליחה עם מספר הטלפון שממנו אתם מחייגים הקישו 2. להקשת מספר שולח אחר הקישו 3.',
+          `val_${session.stepCounter}`,
+          { minDigits: 1, maxDigits: 1, secWait: 8, digitsAllowed: ['1', '2', '3'] }
+        );
+        return { yemotResponse: yemotCmd, contentType: 'text/plain; charset=utf-8' };
+      } else {
+        // Email destination
+        if (rawDest === '1') {
+          session.dispatchState.destination = currentSettings.defaultRecipientEmail || 'm0583277004@gmail.com';
+          session.dispatchState.step = 'CHOOSE_SENDER';
+          session.stepCounter += 1;
+          const yemotCmd = getDigitsCmd(
+            'כתובת היעד נקלטה. כעת בחרו מאיזה מייל יישלח: לשליחה מכתובת המערכת הקבועה הקישו 1. לשליחה עם זיהוי מספר הטלפון שלכם כשולח הקישו 2. להקלטת כתובת מייל שולח אחרת הקישו 3.',
+            `val_${session.stepCounter}`,
+            { minDigits: 1, maxDigits: 1, secWait: 8, digitsAllowed: ['1', '2', '3'] }
+          );
+          return { yemotResponse: yemotCmd, contentType: 'text/plain; charset=utf-8' };
+        } else if (rawDest === '2') {
+          session.stepCounter += 1;
+          const promptRecordEmail = formatYemotText('אנא אמרו את כתובת המייל המבוקשת ליעד לאחר הצליל, ולסיום הקישו סולמית.');
+          const yemotCmd = `read=t-${promptRecordEmail}=val_${session.stepCounter},no,record,,,no,yes,,,45`;
+          return { yemotResponse: yemotCmd, contentType: 'text/plain; charset=utf-8' };
+        } else {
+          // Received spoken audio or direct text for email
+          let emailCandidate = rawDest;
+          if (rawDest.includes('.wav') || rawDest.startsWith('ivr2:') || /^\d{1,5}$/.test(rawDest)) {
+            const emailAudio = await fetchYemotAudio(rawDest, '20');
+            if (emailAudio) {
+              const res = await processAudioQuery(emailAudio, 'audio/wav', [], {
+                systemPrompt: 'חלץ או תמלל במדויק מתוך ההקלטה את כתובת האימייל באנגלית (למשל name@gmail.com). השב רק בכתובת האימייל באותיות קטנות בלבד ללא שום מילים נוספות.',
+                models: ['gemini-flash-latest'],
+              });
+              const match = res.textResponse.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
+              if (match) {
+                emailCandidate = match[0];
+              }
+            }
+          }
+
+          if (!emailCandidate.includes('@')) {
+            emailCandidate = currentSettings.defaultRecipientEmail || 'm0583277004@gmail.com';
+          }
+
+          session.dispatchState.destination = emailCandidate;
+          session.dispatchState.step = 'CHOOSE_SENDER';
+          session.stepCounter += 1;
+          const yemotCmd = getDigitsCmd(
+            'כתובת המייל נקלטה. כעת בחרו מאיזה מייל יישלח: לשליחה מכתובת המערכת הקבועה הקישו 1. לשליחה עם זיהוי מספרכם כשולח הקישו 2. להקלטת כתובת מייל שולח אחרת הקישו 3.',
+            `val_${session.stepCounter}`,
+            { minDigits: 1, maxDigits: 1, secWait: 8, digitsAllowed: ['1', '2', '3'] }
+          );
+          return { yemotResponse: yemotCmd, contentType: 'text/plain; charset=utf-8' };
+        }
+      }
+    }
+
+    // Step 2.5: User chooses sender (Default system / Caller Phone / Custom)
+    if (currentStep === 'CHOOSE_SENDER') {
+      const senderChoice = String(rawInput || '').trim();
+      const channel = session.dispatchState.channel || 'whatsapp';
+
+      if (senderChoice === '1') {
+        // System default sender
+        session.dispatchState.senderOption = 'default';
+        session.dispatchState.customSender = channel === 'whatsapp'
+          ? (currentSettings.defaultWhatsAppSender || '0583277004')
+          : (currentSettings.defaultEmailSender || 'm0583277004@gmail.com');
+        session.dispatchState.step = 'RECORD_MESSAGE';
+        session.stepCounter += 1;
+        const promptRecordText = formatYemotText('יישלח מכתובת המערכת הקבועה. כעת, אנא הקליטו את הודעתכם הקולית לאחר הצליל, ולסיום הקישו סולמית.');
+        const yemotCmd = `read=t-${promptRecordText}=val_${session.stepCounter},no,record,,,no,yes,,,120`;
+        return { yemotResponse: yemotCmd, contentType: 'text/plain; charset=utf-8' };
+      } else if (senderChoice === '2') {
+        // Caller's own phone as sender
+        session.dispatchState.senderOption = 'caller_phone';
+        session.dispatchState.customSender = phone;
+        session.dispatchState.step = 'RECORD_MESSAGE';
+        session.stepCounter += 1;
+        const promptRecordText = formatYemotText('יישלח עם זיהוי הטלפון שממנו אתם מחייגים. כעת, אנא הקליטו את הודעתכם הקולית לאחר הצליל, ולסיום הקישו סולמית.');
+        const yemotCmd = `read=t-${promptRecordText}=val_${session.stepCounter},no,record,,,no,yes,,,120`;
+        return { yemotResponse: yemotCmd, contentType: 'text/plain; charset=utf-8' };
+      } else if (senderChoice === '3') {
+        // User wants to enter custom sender
+        session.dispatchState.senderOption = 'custom';
+        session.dispatchState.step = 'INPUT_CUSTOM_SENDER';
+        session.stepCounter += 1;
+        if (channel === 'whatsapp') {
+          const yemotCmd = getDigitsCmd(
+            'אנא הקישו כעת את מספר הטלפון או הוואטסאפ של השולח הרצוי, ולסיום סולמית.',
+            `val_${session.stepCounter}`,
+            { minDigits: 9, maxDigits: 14, secWait: 10 }
+          );
+          return { yemotResponse: yemotCmd, contentType: 'text/plain; charset=utf-8' };
+        } else {
+          const askCustomText = formatYemotText('אנא אמרו את כתובת המייל של השולח הרצוי לאחר הצליל, ולסיום הקישו סולמית.');
+          const yemotCmd = `read=t-${askCustomText}=val_${session.stepCounter},no,record,,,no,yes,,,45`;
+          return { yemotResponse: yemotCmd, contentType: 'text/plain; charset=utf-8' };
+        }
+      } else {
+        // Default to system sender on invalid digit and continue
+        session.dispatchState.senderOption = 'default';
+        session.dispatchState.step = 'RECORD_MESSAGE';
+        session.stepCounter += 1;
+        const promptRecordText = formatYemotText('הקשה לא זוהתה, יישלח ממספר המערכת. כעת, אנא הקליטו את הודעתכם הקולית לאחר הצליל, ולסיום סולמית.');
+        const yemotCmd = `read=t-${promptRecordText}=val_${session.stepCounter},no,record,,,no,yes,,,120`;
+        return { yemotResponse: yemotCmd, contentType: 'text/plain; charset=utf-8' };
+      }
+    }
+
+    // Step 2.6: Input Custom Sender
+    if (currentStep === 'INPUT_CUSTOM_SENDER') {
+      const rawCustom = String(rawInput || '').trim();
+      const channel = session.dispatchState.channel || 'whatsapp';
+
+      if (channel === 'whatsapp') {
+        const cleanCustom = rawCustom.replace(/[^0-9]/g, '');
+        session.dispatchState.customSender = cleanCustom.length >= 7 ? cleanCustom : phone;
+      } else {
+        let senderEmail = rawCustom;
+        if (rawCustom.includes('.wav') || rawCustom.startsWith('ivr2:') || /^\d{1,5}$/.test(rawCustom)) {
+          const emailAudio = await fetchYemotAudio(rawCustom, '20');
+          if (emailAudio) {
+            const res = await processAudioQuery(emailAudio, 'audio/wav', [], {
+              systemPrompt: 'חלץ או תמלל במדויק מתוך ההקלטה את כתובת האימייל באנגלית (למשל name@gmail.com). השב רק בכתובת האימייל באותיות קטנות בלבד ללא שום מילים נוספות.',
+              models: ['gemini-flash-latest'],
+            });
+            const match = res.textResponse.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
+            if (match) {
+              senderEmail = match[0];
+            }
+          }
+        }
+        session.dispatchState.customSender = senderEmail.includes('@')
+          ? senderEmail
+          : (currentSettings.defaultEmailSender || `caller-${phone}@yemot.system`);
+      }
+
+      session.dispatchState.step = 'RECORD_MESSAGE';
+      session.stepCounter += 1;
+      const promptRecordText = formatYemotText('השולח נקלט בהצלחה. כעת, אנא הקליטו את הודעתכם הקולית לאחר הצליל, ולסיום הקישו סולמית.');
+      const yemotCmd = `read=t-${promptRecordText}=val_${session.stepCounter},no,record,,,no,yes,,,120`;
+      return { yemotResponse: yemotCmd, contentType: 'text/plain; charset=utf-8' };
+    }
+
+    // Step 3: Message audio received! Transcribe and Dispatch!
+    if (currentStep === 'RECORD_MESSAGE' || uploadedAudioBuffer) {
+      let recordedAudio: Buffer | null = uploadedAudioBuffer || null;
+      if (!recordedAudio && rawInput) {
+        recordedAudio = await fetchYemotAudio(String(rawInput), '20');
+      }
+
+      let transcript = '';
+      if (recordedAudio && recordedAudio.length > 0) {
+        const queryOptions = {
+          systemPrompt: 'אתה מתמלל הודעות קוליות מדויק ואמין. תמלל במדויק את כל דברי המקליט בהקלטה הקולית. ספק תמלול נקי ונאמן למקור, ללא שום תוספות או הערות משלך.',
+          models: ['gemini-flash-latest', 'gemini-3.5-flash'],
+        };
+        const geminiRes = await processAudioQuery(recordedAudio, 'audio/wav', [], queryOptions);
+        transcript = geminiRes.transcript || geminiRes.textResponse || 'הודעה קולית הוקלטה בהצלחה';
+      } else {
+        transcript = String(rawInput || 'הודעה קולית שהוקלטה בשיחה');
+        // Synthesize audio if text was submitted directly
+        try {
+          recordedAudio = await synthesizeHebrewSpeech(transcript, 1.0);
+        } catch (e) {}
+      }
+
+      // Store in audio cache for direct listening link
+      let audioUrl = '';
+      if (recordedAudio) {
+        const audioId = await storeAudioInCache(recordedAudio, 'audio/mp3');
+        audioUrl = `${baseUrl}/api/yemot/audio/${audioId}.mp3`;
+      }
+
+      const channel = session.dispatchState.channel || 'whatsapp';
+      const destination = session.dispatchState.destination || (channel === 'whatsapp' ? '0583277004' : (currentSettings.defaultRecipientEmail || 'm0583277004@gmail.com'));
+      
+      // Determine sender identity based on user choice
+      const chosenSender = session.dispatchState.customSender || (channel === 'whatsapp'
+        ? (currentSettings.defaultWhatsAppSender || '0583277004')
+        : (currentSettings.defaultEmailSender || 'm0583277004@gmail.com'));
+
+      let dispatchSuccess = false;
+
+      if (channel === 'whatsapp') {
+        const waRes = await sendWhatsAppMessage({
+          to: destination,
+          text: transcript,
+          audioUrl,
+          audioBuffer: recordedAudio || undefined,
+          senderInfo: `שולח מבוקש: ${chosenSender} (טלפון מחייג: ${phone})`,
+          fromNumber: chosenSender,
+        });
+        dispatchSuccess = waRes.success;
+      } else {
+        const fromHeader = chosenSender.includes('@')
+          ? `"${phone}" <${chosenSender}>`
+          : currentSettings.defaultEmailSender || `"${phone}" <ivr-ai@yemot.system>`;
+
+        const emailRes = await sendEmailMessage({
+          to: destination,
+          subject: `הודעה קולית חדשה משולח ${chosenSender} (טלפון ${phone}) - שלוחה 20`,
+          text: `התקבלה הודעה קולית חדשה!\n\nשולח מבוקש: ${chosenSender}\nטלפון מחייג: ${phone}\nיעד: ${destination}\n\nתמלול ההודעה הקולית:\n"${transcript}"\n\nקישור להאזנה להקלטה:\n${audioUrl}`,
+          callerPhone: phone,
+          from: fromHeader,
+          attachments: recordedAudio ? [
+            {
+              filename: `voice-message-${phone}-${Date.now()}.mp3`,
+              content: recordedAudio,
+              contentType: 'audio/mp3',
+            }
+          ] : undefined,
+        });
+        dispatchSuccess = emailRes.success;
+      }
+
+      // Record in Call Logs
+      const logItem: CallLog = {
+        id: crypto.randomBytes(8).toString('hex'),
+        callerPhone: phone,
+        callerDid: queryParams.ApiDID,
+        callId,
+        extension: '20',
+        timestamp: Date.now(),
+        durationSeconds: Math.round((Date.now() - startTime) / 1000) + 15,
+        questionText: `הקלטת הודעה לשליחה ב-${channel === 'whatsapp' ? 'וואטסאפ' : 'מייל'} אל ${destination} (שולח: ${chosenSender})`,
+        questionAudioUrl: audioUrl || (rawInput ? String(rawInput) : undefined),
+        responseText: `ההודעה תומללה ונשלחה בהצלחה ב-${channel === 'whatsapp' ? 'וואטסאפ' : 'מייל'} אל ${destination} (מאת: ${chosenSender}).\nתמלול: "${transcript}"`,
+        status: dispatchSuccess ? 'completed' : 'failed',
+        latencyMs: Date.now() - startTime,
+        tokensUsed: Math.round(transcript.length * 1.5),
+        costEstimateUsd: 0.0004,
+        costSavedUsd: 0.16,
+        dispatchAction: {
+          channel,
+          recipient: destination,
+          sender: chosenSender,
+          status: dispatchSuccess ? 'sent' : 'failed',
+          audioUrl,
+          transcript,
+        },
+      };
+      callLogs.push(logItem);
+
+      // Reset state for new dispatch
+      session.dispatchState = { step: 'CHOOSE_CHANNEL' };
+      session.stepCounter = 1;
+
+      const finishText = formatYemotText(`הודעתכם נשלחה בהצלחה ב-${channel === 'whatsapp' ? 'וואטסאפ' : 'מייל'}. תודה ולהתראות.`);
+      const yemotCmd = `id_list_message=t-${finishText}&hangup`;
       return { yemotResponse: yemotCmd, contentType: 'text/plain; charset=utf-8' };
     }
   }

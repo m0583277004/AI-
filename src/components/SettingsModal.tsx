@@ -194,6 +194,57 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
           </div>
         </div>
 
+        {/* Extension 20 Dispatch Configuration */}
+        <div className="bg-slate-950/70 border border-slate-800 rounded-2xl p-4 space-y-3">
+          <h4 className="text-xs font-bold text-emerald-400 flex items-center gap-1.5">
+            <span>הגדרות שלוחה 20 • ברירות מחדל לוואטסאפ ומייל</span>
+          </h4>
+
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div>
+              <label className="block text-[11px] font-medium text-slate-400 mb-1">
+                מספר וואטסאפ קבוע של השולח:
+              </label>
+              <input
+                type="text"
+                dir="ltr"
+                value={settings.defaultWhatsAppSender || ''}
+                onChange={(e) => setSettings({ ...settings, defaultWhatsAppSender: e.target.value })}
+                placeholder="058-3277004"
+                className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-1.5 text-xs text-white font-mono"
+              />
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-medium text-slate-400 mb-1">
+                כתובת מייל קבועה של השולח:
+              </label>
+              <input
+                type="email"
+                dir="ltr"
+                value={settings.defaultEmailSender || ''}
+                onChange={(e) => setSettings({ ...settings, defaultEmailSender: e.target.value })}
+                placeholder="ivr-ai@yemot.system"
+                className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-1.5 text-xs text-white font-mono"
+              />
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-medium text-slate-400 mb-1">
+                מייל יעד כברירת מחדל:
+              </label>
+              <input
+                type="email"
+                dir="ltr"
+                value={settings.defaultRecipientEmail || ''}
+                onChange={(e) => setSettings({ ...settings, defaultRecipientEmail: e.target.value })}
+                placeholder="m0583277004@gmail.com"
+                className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-1.5 text-xs text-white font-mono"
+              />
+            </div>
+          </div>
+        </div>
+
         {/* Footer Actions */}
         <div className="flex items-center justify-between pt-4 border-t border-slate-800">
           <span className="text-xs text-slate-400">

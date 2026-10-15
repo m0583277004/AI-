@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: yemot-ai-ivr
+    env: docker
+    plan: free
+    region: frankfurt # Low latency to Israel
+    dockerfilePath: Dockerfile
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: GEMINI_API_KEY
+        sync: false # Set in Render Dashboard
+      - key: YEMOT_USERNAME
+        value: 0777003161
+      - key: YEMOT_PASSWORD
+        value: "7003161"
+      - key: YEMOT_TOKEN
+        value: WU1BUElL.apik_WtVEpFUY1BY9hoo6d0tV3g.p2JSowKvsXxrlQNeXfdTVK63hgdh2gYOdBJ6O9YUGik

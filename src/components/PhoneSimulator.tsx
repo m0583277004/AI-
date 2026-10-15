@@ -7,14 +7,14 @@ interface PhoneSimulatorProps {
 }
 
 export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({ onCallCompleted }) => {
-  const [selectedExtension, setSelectedExtension] = useState<'6' | '7' | '8' | '9' | '10' | '12'>('6');
+  const [selectedExtension, setSelectedExtension] = useState<'6' | '7' | '8' | '9' | '10' | '12' | '20'>('6');
   const [callState, setCallState] = useState<'idle' | 'calling' | 'connected' | 'recording' | 'processing' | 'speaking'>('idle');
   const [phoneNumber, setPhoneNumber] = useState('058-3277004');
   const [callSeconds, setCallSeconds] = useState(0);
   const [isMuted, setIsMuted] = useState(false);
   const [textInput, setTextInput] = useState('');
 
-  const EXTENSION_DETAILS: Record<'6' | '7' | '8' | '9' | '10' | '12', {
+  const EXTENSION_DETAILS: Record<'6' | '7' | '8' | '9' | '10' | '12' | '20', {
     name: string;
     title: string;
     badge: string;
@@ -49,6 +49,20 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({ onCallCompleted 
         'משכנתא 500,000 ש"ח בריבית 4.5% ל-25 שנה',
         'הלוואת גמ"ח 50,000 ש"ח בריבית 0% ל-5 שנים',
         'הלוואה 200,000 ש"ח בריבית 6.2% ל-15 שנים',
+      ],
+    },
+    '20': {
+      name: 'שלוחה 20',
+      title: 'הודעה קולית לוואטסאפ או למייל',
+      badge: 'WhatsApp + Mail',
+      badgeColor: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30',
+      welcome: 'שלום וברוכים הבאים להקלטת הודעה קולית. לשליחה בוואטסאפ הקישו 1. לשליחה במייל הקישו 2.',
+      modelDesc: 'הקלטת הודעה קולית, תמלול AI ושליחה ישירה לכל מספר וואטסאפ או כתובת מייל',
+      sampleQuestions: [
+        'שלח הודעה קולית לוואטסאפ: 058-3277004',
+        'שלח הודעה קולית למייל: m0583277004@gmail.com',
+        'הודעה קולית דחופה לחזרה בהקדם',
+        'הודעת תזכורת לפגישה מחר בבוקר',
       ],
     },
     '9': {
@@ -382,8 +396,8 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({ onCallCompleted 
           </div>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2.5">
-          {(['6', '9', '10', '12', '7', '8'] as const).map((extKey) => {
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-2">
+          {(['6', '20', '12', '9', '10', '7', '8'] as const).map((extKey) => {
             const info = EXTENSION_DETAILS[extKey];
             const isSelected = selectedExtension === extKey;
             return (

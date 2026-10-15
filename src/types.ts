@@ -20,6 +20,15 @@ export interface CallLog {
     status: string;
     previewUrl?: string | false;
   };
+  dispatchAction?: {
+    channel: 'whatsapp' | 'email';
+    recipient: string;
+    sender?: string;
+    status: 'sent' | 'delivered' | 'simulated' | 'failed';
+    previewUrl?: string | false;
+    audioUrl?: string;
+    transcript?: string;
+  };
 }
 
 export interface AssistantSettings {
@@ -33,6 +42,11 @@ export interface AssistantSettings {
   temperature: number;
   saveRecordings: boolean;
   model: string;
+  defaultWhatsAppSender?: string;
+  defaultEmailSender?: string;
+  defaultRecipientEmail?: string;
+  whatsappProvider?: 'simulated' | 'green-api' | 'callmebot' | 'twilio' | 'custom-webhook';
+  whatsappApiKey?: string;
 }
 
 export interface YemotConfigOptions {

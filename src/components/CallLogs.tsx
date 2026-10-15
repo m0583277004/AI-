@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { CallLog } from '../types';
-import { Phone, Clock, Volume2, RotateCcw, Search, CheckCircle2, Shield, Sparkles, User, Bot, Zap, Mail, ExternalLink } from 'lucide-react';
+import { Phone, Clock, Volume2, RotateCcw, Search, CheckCircle2, Shield, Sparkles, User, Bot, Zap, Mail, ExternalLink, Send } from 'lucide-react';
 
 export const CallLogs: React.FC = () => {
   const [logs, setLogs] = useState<CallLog[]>([]);
@@ -121,7 +121,17 @@ export const CallLogs: React.FC = () => {
                       <span className="text-[10px] px-2 py-0.5 rounded bg-slate-800 text-slate-300">
                         שלוחה {log.extension}
                       </span>
-                      {log.emailAction && (
+                      {log.dispatchAction && (
+                        <span className={`text-[10px] px-2 py-0.5 rounded flex items-center gap-1 border ${
+                          log.dispatchAction.channel === 'whatsapp'
+                            ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
+                            : 'bg-blue-500/20 text-blue-300 border-blue-500/30'
+                        }`}>
+                          <Send className="w-3 h-3" />
+                          <span>נשלח ב-{log.dispatchAction.channel === 'whatsapp' ? 'וואטסאפ' : 'מייל'}: {log.dispatchAction.recipient}</span>
+                        </span>
+                      )}
+                      {log.emailAction && !log.dispatchAction && (
                         <span className="text-[10px] px-2 py-0.5 rounded bg-blue-500/20 text-blue-300 border border-blue-500/30 flex items-center gap-1">
                           <Mail className="w-3 h-3 text-blue-400" />
                           נשלח מייל: {log.emailAction.targetEmail}

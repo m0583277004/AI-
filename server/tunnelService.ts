@@ -144,7 +144,7 @@ function startWatchdog(port: number = 3000) {
   // Run health check and auto-sync verification every 15 seconds
   setInterval(async () => {
     try {
-      if (!tunnelProcess) {
+      if (!tunnelProcess && !process.env.RENDER_EXTERNAL_URL && !process.env.PUBLIC_URL) {
         console.log('[Tunnel Watchdog] Tunnel process dead, restarting...');
         consecutiveHealthFailures = 0;
         await startCloudflareTunnel(port);
@@ -152,24 +152,52 @@ function startWatchdog(port: number = 3000) {
       }
 
       if (activePublicUrl) {
-        // 1. Check local server health and process status
+        // 1. Check local server health
         let localPingOk = false;
         try {
           const localRes = await fetch(`http://127.0.0.1:${port}/api/health`);
           localPingOk = localRes.ok;
         } catch (e) {}
 
-        // If local server is running fine and tunnel process is running, the tunnel is healthy!
-        // (Note: trycloudflare.com resolves via public DNS 8.8.8.8, not container internal DNS, so we don't kill the tunnel on public resolve error)
         if (!localPingOk) {
           console.warn('[Tunnel Watchdog] Local server ping failed on port', port);
         }
 
-        // 2. Proactively verify that Yemot ext.ini is actually synced with the active public URL
+        // 2. Edge Health Check on public URL (ensure Cloudflare didn't stall)
+        if (localPingOk && activePublicUrl.includes('trycloudflare.com')) {
+          let edgeOk = false;
+          try {
+            const controller = new AbortController();
+            const tid = setTimeout(() => controller.abort(), 6000);
+            const edgeRes = await fetch(`${activePublicUrl}/api/health`, {
+              signal: controller.signal,
+              headers: { 'User-Agent': 'Tunnel-Watchdog/1.0' },
+            });
+            clearTimeout(tid);
+            edgeOk = edgeRes.ok;
+          } catch (e) {}
+
+          if (!edgeOk) {
+            consecutiveHealthFailures++;
+            console.warn(`[Tunnel Watchdog] Public edge health check failed (${consecutiveHealthFailures}/3) for ${activePublicUrl}`);
+            if (consecutiveHealthFailures >= 3 && tunnelProcess) {
+              console.error('[Tunnel Watchdog] Public tunnel stalled. Reviving Cloudflare tunnel...');
+              try { tunnelProcess.kill(); } catch (kErr) {}
+              tunnelProcess = null;
+              consecutiveHealthFailures = 0;
+              await startCloudflareTunnel(port);
+              return;
+            }
+          } else {
+            consecutiveHealthFailures = 0;
+          }
+        }
+
+        // 3. Proactively verify that Yemot ext.ini is actually synced with the active public URL
         const isYemotSynced = await checkYemotExtCurrentUrl(activePublicUrl);
         if (!isYemotSynced) {
-          console.log(`[Tunnel Watchdog] Yemot ext.ini is not synced to ${activePublicUrl}. Re-syncing extensions [4, 6, 7, 8, 9, 10, 12]...`);
-          const syncRes = await syncToYemot(activePublicUrl, ['4', '6', '7', '8', '9', '10', '12']);
+          console.log(`[Tunnel Watchdog] Yemot ext.ini is not synced to ${activePublicUrl}. Re-syncing extensions [4, 6, 7, 8, 9, 10, 12, 20]...`);
+          const syncRes = await syncToYemot(activePublicUrl, ['4', '6', '7', '8', '9', '10', '12', '20']);
           if (syncRes.success) {
             lastSyncedUrl = activePublicUrl;
             console.log('[Tunnel Watchdog] Extensions synced successfully to Yemot!');
@@ -182,17 +210,24 @@ function startWatchdog(port: number = 3000) {
   }, 15000);
 }
 
+import { registerActiveUrl } from './keepAliveService';
+
+export const ALL_ACTIVE_EXTENSIONS = ['4', '6', '7', '8', '9', '10', '12', '20'];
+
 export async function initTunnelAndSyncYemot(port: number = 3000): Promise<string> {
   startWatchdog(port);
 
   if (isStarting) return activePublicUrl;
   isStarting = true;
 
-  if (process.env.PUBLIC_URL && process.env.PUBLIC_URL.startsWith('http')) {
-    activePublicUrl = process.env.PUBLIC_URL.trim().replace(/\/$/, '');
+  // Auto-detect production cloud hosting (Render, Fly, VPS, custom domain)
+  const envUrl = process.env.PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || process.env.SERVER_URL;
+  if (envUrl && envUrl.startsWith('http')) {
+    activePublicUrl = envUrl.trim().replace(/\/$/, '');
     lastSyncedUrl = activePublicUrl;
-    console.log(`[Tunnel] Using configured PUBLIC_URL: ${activePublicUrl}`);
-    await syncToYemot(activePublicUrl, ['4', '6', '7', '8', '9', '10', '12']);
+    registerActiveUrl(activePublicUrl);
+    console.log(`[Tunnel] Using permanent Cloud URL: ${activePublicUrl}`);
+    await syncToYemot(activePublicUrl, ALL_ACTIVE_EXTENSIONS);
     isStarting = false;
     return activePublicUrl;
   }
@@ -202,9 +237,10 @@ export async function initTunnelAndSyncYemot(port: number = 3000): Promise<strin
     if (cfUrl && cfUrl.startsWith('http')) {
       activePublicUrl = cfUrl;
       lastSyncedUrl = cfUrl;
+      registerActiveUrl(activePublicUrl);
       console.log(`[Tunnel] Primary Cloudflare Tunnel LIVE: ${activePublicUrl}`);
 
-      await syncToYemot(activePublicUrl, ['4', '6', '7', '8', '9', '10', '12']);
+      await syncToYemot(activePublicUrl, ALL_ACTIVE_EXTENSIONS);
       isStarting = false;
       return activePublicUrl;
     }
@@ -219,9 +255,10 @@ export async function initTunnelAndSyncYemot(port: number = 3000): Promise<strin
     if (tmUrl && tmUrl.startsWith('http')) {
       activePublicUrl = tmUrl;
       lastSyncedUrl = tmUrl;
+      registerActiveUrl(activePublicUrl);
       console.log(`[Tunnel] Tunnelmole LIVE: ${activePublicUrl}`);
 
-      await syncToYemot(activePublicUrl, ['4', '6', '7', '8', '9', '10', '12']);
+      await syncToYemot(activePublicUrl, ALL_ACTIVE_EXTENSIONS);
       isStarting = false;
       return activePublicUrl;
     }
@@ -233,12 +270,14 @@ export async function initTunnelAndSyncYemot(port: number = 3000): Promise<strin
   return activePublicUrl;
 }
 
-export async function syncToYemot(publicUrl: string, extensions: string | string[] = ['4', '6', '7', '8', '9', '10', '12']): Promise<{ success: boolean; message: string }> {
+export async function syncToYemot(publicUrl: string, extensions: string | string[] = ALL_ACTIVE_EXTENSIONS): Promise<{ success: boolean; message: string }> {
   const username = '0777003161';
   const password = '7003161';
   const apiKey = 'WU1BUElL.apik_WtVEpFUY1BY9hoo6d0tV3g.p2JSowKvsXxrlQNeXfdTVK63hgdh2gYOdBJ6O9YUGik';
   const cleanUrl = publicUrl.trim().replace(/\/$/, '');
   const webhookUrl = `${cleanUrl}/api/yemot/ivr`;
+
+  registerActiveUrl(cleanUrl);
 
   const extList = Array.isArray(extensions) ? extensions : [extensions];
 
@@ -255,7 +294,7 @@ export async function syncToYemot(publicUrl: string, extensions: string | string
 
   const results = [];
   for (const ext of extList) {
-    const isAudioRecordingExt = ['6', '7', '8', '9', '10'].includes(ext);
+    const isAudioRecordingExt = ['6', '7', '8', '9', '10', '20'].includes(ext);
     const extIniContent = `; הגדרות שלוחה ${ext} - מענה קולי מבוסס AI של ימות המשיח
 type=api
 api_link=${webhookUrl}
@@ -264,7 +303,12 @@ api_call_id_send=yes
 api_did_send=yes
 api_extension_send=yes
 api_hangup_send=yes
-${isAudioRecordingExt ? 'api_link_send_recording=yes\napi_timeout=60\nrecord_ok=no\nrecord_hangup=yes' : 'api_timeout=25'}
+api_timeout=90
+api_wait_answer_music_on_hold=yes
+api_max_retry=3
+api_retry_time=2
+api_error_goto=/offline
+${isAudioRecordingExt ? 'api_link_send_recording=yes\nrecord_ok=no\nrecord_hangup=yes' : ''}
 `;
 
     try {

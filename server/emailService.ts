@@ -6,6 +6,13 @@ export interface EmailOptions {
   text: string;
   html?: string;
   callerPhone?: string;
+  from?: string;
+  attachments?: Array<{
+    filename: string;
+    content?: Buffer;
+    path?: string;
+    contentType?: string;
+  }>;
 }
 
 let testAccountTransporter: nodemailer.Transporter | null = null;
@@ -82,35 +89,36 @@ export async function sendEmailMessage(options: EmailOptions): Promise<{
 }> {
   try {
     const transporter = await getEmailTransporter();
-    const fromAddress = process.env.SMTP_FROM || process.env.GMAIL_USER || '"Yemot AI Voice Assistant" <ivr-ai@yemot.system>';
+    const fromAddress = options.from || process.env.SMTP_FROM || process.env.GMAIL_USER || '"Yemot AI Voice Assistant" <ivr-ai@yemot.system>';
 
     const htmlBody = options.html || `
       <div dir="rtl" style="font-family: Arial, sans-serif; line-height: 1.6; color: #222; max-width: 600px; margin: 0 auto; border: 1px solid #e0e0e0; border-radius: 8px; padding: 20px;">
         <div style="background-color: #1e3a8a; color: white; padding: 12px 16px; border-radius: 6px; margin-bottom: 20px;">
-          <h2 style="margin: 0; font-size: 18px;">סיכום שיחה קולית - ימות המשיח AI</h2>
+          <h2 style="margin: 0; font-size: 18px;">הודעה קולית - ימות המשיח AI</h2>
         </div>
         
         <p style="font-size: 15px; margin-bottom: 15px;">שלום,</p>
-        <p style="font-size: 15px; margin-bottom: 20px;">להלן המידע שביקשת במהלך השיחה הטלפונית:</p>
+        <p style="font-size: 15px; margin-bottom: 20px;">להלן תמלול ההודעה הקולית שנשלחה אליך משלוחה 20:</p>
         
         <div style="background-color: #f8fafc; border-right: 4px solid #2563eb; padding: 14px; border-radius: 4px; margin-bottom: 20px; white-space: pre-wrap; font-size: 15px;">
 ${options.text}
         </div>
 
-        ${options.callerPhone ? `<p style="font-size: 12px; color: #64748b;">מספר טלפון מחייג: ${options.callerPhone}</p>` : ''}
+        ${options.callerPhone ? `<p style="font-size: 12px; color: #64748b;">מספר טלפון שולח: ${options.callerPhone}</p>` : ''}
         <p style="font-size: 12px; color: #64748b;">תאריך ושעה: ${new Date().toLocaleString('he-IL', { timeZone: 'Asia/Jerusalem' })}</p>
         
         <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 20px 0;" />
-        <p style="font-size: 11px; color: #94a3b8; text-align: center;">נשלח אוטומטית על ידי מערכת המענה הקולי החכם של ימות המשיח</p>
+        <p style="font-size: 11px; color: #94a3b8; text-align: center;">נשלח אוטומטית על ידי מערכת המענה הקולי החכם של ימות המשיח (הקובץ הקולי מצורף להודעה)</p>
       </div>
     `;
 
     const info = await transporter.sendMail({
       from: fromAddress,
       to: options.to,
-      subject: options.subject || 'מידע וסיכום משיחה קולית - ימות המשיח AI',
+      subject: options.subject || 'הודעה קולית חדשה - ימות המשיח AI',
       text: options.text,
       html: htmlBody,
+      attachments: options.attachments,
     });
 
     const previewUrl = nodemailer.getTestMessageUrl(info);

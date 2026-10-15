@@ -5,11 +5,13 @@ import { YemotSetupGuide } from './components/YemotSetupGuide';
 import { CostComparison } from './components/CostComparison';
 import { CallLogs } from './components/CallLogs';
 import { WebhookTester } from './components/WebhookTester';
+import { KeepAliveManager } from './components/KeepAliveManager';
+import { VoiceDispatchViewer } from './components/VoiceDispatchViewer';
 import { SettingsModal } from './components/SettingsModal';
 import { Phone, CheckCircle2, TrendingDown, Clock, Zap, Sparkles, Radio, ArrowLeft } from 'lucide-react';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'simulator' | 'yemot-setup' | 'cost-comparison' | 'logs' | 'tester'>('simulator');
+  const [activeTab, setActiveTab] = useState<'simulator' | 'yemot-setup' | 'cost-comparison' | 'logs' | 'tester' | 'keep-alive' | 'voice-dispatch'>('simulator');
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [stats, setStats] = useState<{
     totalCalls: number;
@@ -152,6 +154,14 @@ export default function App() {
 
         {activeTab === 'tester' && (
           <WebhookTester webhookUrl={webhookUrl} />
+        )}
+
+        {activeTab === 'keep-alive' && (
+          <KeepAliveManager />
+        )}
+
+        {activeTab === 'voice-dispatch' && (
+          <VoiceDispatchViewer />
         )}
 
       </main>

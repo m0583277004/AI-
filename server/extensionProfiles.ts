@@ -156,6 +156,21 @@ export const EXTENSION_PROFILES: Record<string, ExtensionProfile> = {
     timeoutMs: 8000,
     voiceSpeed: 1.0,
   },
+
+  '20': {
+    extension: '20',
+    name: 'הקלטת הודעה ושליחה לוואטסאפ או למייל',
+    subtitle: 'הקלטת הודעה קולית בטלפון, תמלול AI ושליחה ישירה לכל מספר וואטסאפ או כתובת מייל',
+    icon: 'Send',
+    systemPrompt: `אתה עוזר טלפוני לשירות הקלטה ושליחת הודעות קוליות לווצאפ או למייל. תפקידך לתמלל במדויק את ההודעה הקולית שהוקלטה בעברית או בכל שפה שנאמרה, ולספק סיכום ברור ותמליל מדויק לשליחה.`,
+    welcomeMessage: 'שלום וברוכים הבאים לשירות שליחת הודעות קוליות. לבחירת שליחה בוואטסאפ הקישו 1. לבחירת שליחה במייל הקישו 2.',
+    noSpeechMessage: 'לא נקלטה בחירה, אנא הקישו 1 לוואטסאפ או 2 למייל.',
+    models: ['gemini-flash-latest', 'gemini-3.5-flash-lite'],
+    temperature: 0.1,
+    maxTokens: 500,
+    timeoutMs: 15000,
+    voiceSpeed: 1.0,
+  },
 };
 
 export function getProfileForExtension(ext: string): ExtensionProfile {
